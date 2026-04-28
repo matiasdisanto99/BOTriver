@@ -50,6 +50,30 @@ def enviar_whatsapp(mensaje):
         print(f"Error WhatsApp: {e}")
 
 
+def hacer_login(page):
+    page.goto(LOGIN_URL, timeout=40000, wait_until="domcontentloaded")
+    page.wait_for_timeout(5000)
+    email_input = page.locator("input[type='email'], input[name='Email'], input[name='email']").first
+    if not email_input.is_visible():
+        return False
+    email_input.fill(RIVER_EMAIL)
+    page.locator("input[type='password'], input[name='Password']").first.fill(RIVER_PASSWORD)
+    page.locator("button[type='submit'], input[type='submit']").first.click()
+    page.wait_for_load_state("domcontentloaded", timeout=20000)
+    page.wait_for_timeout(3000)
+    return "Login" not in page.url
+
+
+def contar_botones_activos(page):
+    return page.evaluate("""() => {
+        let count = 0;
+        document.querySelectorAll('button').forEach(b => {
+            if (b.textContent.trim().toUpperCase() === 'COMPRAR' && !b.disabled) count++;
+        });
+        return count;
+    }""")
+
+
 def chequear_entradas():
     estado["ultimo_chequeo"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     detalle_lines = []
@@ -66,22 +90,7 @@ def chequear_entradas():
         page = context.new_page()
 
         try:
-            # LOGIN
-            page.goto(LOGIN_URL, timeout=40000, wait_until="domcontentloaded")
-            page.wait_for_timeout(5000)
-
-            email_input = page.locator("input[type='email'], input[name='Email'], input[name='email']").first
-            if not email_input.is_visible():
-                estado["estado"] = "Error: formulario de login no encontrado"
-                return
-
-            email_input.fill(RIVER_EMAIL)
-            page.locator("input[type='password'], input[name='Password']").first.fill(RIVER_PASSWORD)
-            page.locator("button[type='submit'], input[type='submit']").first.click()
-            page.wait_for_load_state("domcontentloaded", timeout=20000)
-            page.wait_for_timeout(3000)
-
-            if "Login" in page.url:
+            if not hacer_login(page):
                 estado["estado"] = "Error de login"
                 return
 
@@ -89,48 +98,52 @@ def chequear_entradas():
             page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
             page.wait_for_timeout(5000)
 
-            # Obtener IDs de botones COMPRAR activos
-            botones_activos = page.evaluate("""() => {
-                const botones = [];
-                document.querySelectorAll('button').forEach(b => {
-                    if (b.textContent.trim().toUpperCase() === 'COMPRAR' && !b.disabled) {
-                        botones.push(b.id);
-                    }
-                });
-                return botones;
-            }""")
+            total_activos = contar_botones_activos(page)
 
-            if not botones_activos:
+            if total_activos == 0:
                 estado["estado"] = "Sin entradas disponibles"
                 estado["detalle"] = ""
                 return
 
-            detalle_lines.append(f"Partidos activos: {len(botones_activos)}")
-            estado["estado"] = f"{len(botones_activos)} partido(s) con entradas activas"
+            detalle_lines.append(f"Partidos activos: {total_activos}")
+            estado["estado"] = f"{total_activos} partido(s) con entradas activas"
 
-            for i, boton_id in enumerate(botones_activos):
+            for i in range(total_activos):
                 detalle_lines.append(f"\n--- PARTIDO {i+1} ---")
 
-                # Volver al calendario
+                # Recargar calendario y hacer click en el i-esimo boton activo
                 page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
                 page.wait_for_timeout(5000)
 
-                boton = page.locator(f"#{boton_id}")
-                if not boton.is_visible():
-                    detalle_lines.append("Boton no visible")
+                # Hacer click en el boton numero i (0-indexed) entre los activos
+                clicked = page.evaluate(f"""() => {{
+                    const botones = [];
+                    document.querySelectorAll('button').forEach(b => {{
+                        if (b.textContent.trim().toUpperCase() === 'COMPRAR' && !b.disabled) {{
+                            botones.push(b);
+                        }}
+                    }});
+                    if (botones[{i}]) {{
+                        botones[{i}].click();
+                        return true;
+                    }}
+                    return false;
+                }}""")
+
+                if not clicked:
+                    detalle_lines.append("No se pudo hacer click")
                     continue
 
-                # Click y esperar navegacion a /ticketera/
-                boton.click()
+                # Esperar navegacion a ticketera
                 try:
                     page.wait_for_url("**/ticketera/**", timeout=15000)
                     url_ticketera = page.url
-                    detalle_lines.append(f"URL ticketera: {url_ticketera}")
+                    detalle_lines.append(f"URL: {url_ticketera}")
                 except Exception:
-                    detalle_lines.append(f"No navego a ticketera. URL actual: {page.url}")
+                    detalle_lines.append(f"No navego a ticketera. URL: {page.url}")
                     continue
 
-                # Esperar que carguen las ubicaciones
+                # Esperar que carguen ubicaciones
                 page.wait_for_timeout(4000)
                 texto = page.inner_text("body")
                 detalle_lines.append(f"Texto (400 chars): {texto[:400]}")
@@ -138,7 +151,6 @@ def chequear_entradas():
                 if UBICACION_OBJETIVO in texto:
                     detalle_lines.append(f"ENCONTRADO: {UBICACION_OBJETIVO}")
 
-                    # Verificar si hay boton activo cerca de Centenario Baja
                     disponible = page.evaluate(f"""() => {{
                         const all = document.querySelectorAll('*');
                         for (const el of all) {{
@@ -170,7 +182,7 @@ def chequear_entradas():
                     else:
                         detalle_lines.append("Centenario Baja encontrado pero sin boton activo")
                 else:
-                    detalle_lines.append(f"{UBICACION_OBJETIVO} NO encontrado en este partido")
+                    detalle_lines.append(f"{UBICACION_OBJETIVO} NO encontrado")
 
             estado["detalle"] = "\n".join(detalle_lines)
 
