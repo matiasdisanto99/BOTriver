@@ -45,15 +45,15 @@ def enviar_whatsapp(mensaje):
     try:
         client = Client(TWILIO_SID, TWILIO_TOKEN)
         client.messages.create(body=mensaje, from_=TWILIO_WHATSAPP_FROM, to=TWILIO_WHATSAPP_TO)
-        print(f"✅ WhatsApp enviado: {mensaje}")
+        print(f"WhatsApp enviado: {mensaje}")
     except Exception as e:
-        print(f"❌ Error WhatsApp: {e}")
+        print(f"Error WhatsApp: {e}")
 
 
 def chequear_entradas():
     estado["ultimo_chequeo"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     detalle_lines = []
-    print(f"🔍 Chequeando... {estado['ultimo_chequeo']}")
+    print(f"Chequeando... {estado['ultimo_chequeo']}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -105,33 +105,40 @@ def chequear_entradas():
                 estado["detalle"] = ""
                 return
 
-            detalle_lines.append(f"Partidos con entradas: {len(botones_activos)}")
+            detalle_lines.append(f"Partidos activos: {len(botones_activos)}")
             estado["estado"] = f"{len(botones_activos)} partido(s) con entradas activas"
 
             for i, boton_id in enumerate(botones_activos):
                 detalle_lines.append(f"\n--- PARTIDO {i+1} ---")
 
-                # Volver al calendario y hacer click en el boton
+                # Volver al calendario
                 page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
                 page.wait_for_timeout(5000)
 
                 boton = page.locator(f"#{boton_id}")
                 if not boton.is_visible():
-                    detalle_lines.append("Boton no visible al volver")
+                    detalle_lines.append("Boton no visible")
                     continue
 
+                # Click y esperar navegacion a /ticketera/
                 boton.click()
-                page.wait_for_timeout(4000)
-                url_despues = page.url
-                detalle_lines.append(f"URL despues del click: {url_despues}")
+                try:
+                    page.wait_for_url("**/ticketera/**", timeout=15000)
+                    url_ticketera = page.url
+                    detalle_lines.append(f"URL ticketera: {url_ticketera}")
+                except Exception:
+                    detalle_lines.append(f"No navego a ticketera. URL actual: {page.url}")
+                    continue
 
-                page.wait_for_timeout(3000)
+                # Esperar que carguen las ubicaciones
+                page.wait_for_timeout(4000)
                 texto = page.inner_text("body")
-                detalle_lines.append(f"Texto (500 chars): {texto[:500]}")
+                detalle_lines.append(f"Texto (400 chars): {texto[:400]}")
 
                 if UBICACION_OBJETIVO in texto:
                     detalle_lines.append(f"ENCONTRADO: {UBICACION_OBJETIVO}")
 
+                    # Verificar si hay boton activo cerca de Centenario Baja
                     disponible = page.evaluate(f"""() => {{
                         const all = document.querySelectorAll('*');
                         for (const el of all) {{
@@ -143,7 +150,7 @@ def chequear_entradas():
                                     if (!p) break;
                                     for (const b of p.querySelectorAll('button, a')) {{
                                         const t = b.textContent.trim().toUpperCase();
-                                        if ((t.includes('COMPRAR') || t.includes('SELECCIONAR') || t.includes('VER'))
+                                        if ((t.includes('COMPRAR') || t.includes('SELECCIONAR') || t.includes('VER') || t.includes('ELEGIR'))
                                             && !b.disabled
                                             && !b.className.toLowerCase().includes('disabled')) {{
                                             return true;
@@ -157,13 +164,13 @@ def chequear_entradas():
 
                     if disponible:
                         detalle_lines.append("CENTENARIO BAJA DISPONIBLE!")
-                        mensaje = f"ENTRADAS DISPONIBLES - CENTENARIO BAJA\nCompra ahora: {url_despues}"
+                        mensaje = f"ENTRADAS DISPONIBLES - CENTENARIO BAJA\nCompra ahora: {url_ticketera}"
                         enviar_whatsapp(mensaje)
                         estado["estado"] = "ENTRADAS DISPONIBLES - CENTENARIO BAJA"
                     else:
                         detalle_lines.append("Centenario Baja encontrado pero sin boton activo")
                 else:
-                    detalle_lines.append(f"{UBICACION_OBJETIVO} NO encontrado")
+                    detalle_lines.append(f"{UBICACION_OBJETIVO} NO encontrado en este partido")
 
             estado["detalle"] = "\n".join(detalle_lines)
 
