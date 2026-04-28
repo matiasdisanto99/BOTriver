@@ -16,7 +16,8 @@ TWILIO_WHATSAPP_TO = os.environ["TWILIO_WHATSAPP_TO"]
 
 LOGIN_URL = "https://login.riverid.com.ar/Account/Login"
 CALENDARIO_URL = "https://www.riverid.com.ar/Tickets/ProximosPartidos/Calendario"
-INTERVALO_MINUTOS = 10
+UBICACION_OBJETIVO = "Centenario Baja"
+INTERVALO_MINUTOS = 3
 # ──────────────────────────────────────────────────────────────
 
 estado = {"ultimo_chequeo": "Iniciando...", "estado": "OK", "detalle": ""}
@@ -88,61 +89,107 @@ def chequear_entradas():
             page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
             page.wait_for_timeout(5000)
 
-            # Imprimir HTML de todos los botones COMPRAR con su contexto
-            info_botones = page.evaluate("""() => {
-                const resultados = [];
-                const all = document.querySelectorAll('button, a');
-                for (const el of all) {
-                    const texto = el.textContent.trim().toUpperCase();
-                    if (texto.includes('COMPRAR')) {
-                        resultados.push({
-                            tag: el.tagName,
-                            texto: el.textContent.trim(),
-                            href: el.getAttribute('href') || el.href || '',
-                            disabled: el.disabled || el.getAttribute('disabled'),
-                            clases: el.className,
-                            outerHTML: el.outerHTML.substring(0, 300),
-                            parentHTML: el.parentElement ? el.parentElement.outerHTML.substring(0, 300) : ''
-                        });
+            # Obtener IDs de botones COMPRAR activos
+            botones_activos = page.evaluate("""() => {
+                const botones = [];
+                document.querySelectorAll('button').forEach(b => {
+                    if (b.textContent.trim().toUpperCase() === 'COMPRAR' && !b.disabled) {
+                        botones.push(b.id);
                     }
-                }
-                return resultados;
+                });
+                return botones;
             }""")
 
-            detalle_lines.append(f"Total botones COMPRAR: {len(info_botones)}")
-            for i, b in enumerate(info_botones):
-                detalle_lines.append(f"\n--- BOTÓN {i+1} ---")
-                detalle_lines.append(f"Tag: {b['tag']}")
-                detalle_lines.append(f"Texto: {b['texto']}")
-                detalle_lines.append(f"href: {b['href']}")
-                detalle_lines.append(f"disabled: {b['disabled']}")
-                detalle_lines.append(f"clases: {b['clases'][:100]}")
-                detalle_lines.append(f"HTML: {b['outerHTML'][:200]}")
+            if not botones_activos:
+                estado["estado"] = "Sin entradas disponibles"
+                estado["detalle"] = ""
+                return
+
+            detalle_lines.append(f"Partidos con entradas: {len(botones_activos)}")
+            estado["estado"] = f"{len(botones_activos)} partido(s) con entradas activas"
+
+            for i, boton_id in enumerate(botones_activos):
+                detalle_lines.append(f"\n--- PARTIDO {i+1} ---")
+
+                # Volver al calendario y hacer click en el boton
+                page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
+                page.wait_for_timeout(5000)
+
+                boton = page.locator(f"#{boton_id}")
+                if not boton.is_visible():
+                    detalle_lines.append("Boton no visible al volver")
+                    continue
+
+                boton.click()
+                page.wait_for_timeout(4000)
+                url_despues = page.url
+                detalle_lines.append(f"URL despues del click: {url_despues}")
+
+                page.wait_for_timeout(3000)
+                texto = page.inner_text("body")
+                detalle_lines.append(f"Texto (500 chars): {texto[:500]}")
+
+                if UBICACION_OBJETIVO in texto:
+                    detalle_lines.append(f"ENCONTRADO: {UBICACION_OBJETIVO}")
+
+                    disponible = page.evaluate(f"""() => {{
+                        const all = document.querySelectorAll('*');
+                        for (const el of all) {{
+                            if (el.children.length > 0) continue;
+                            if (el.textContent.trim() === '{UBICACION_OBJETIVO}') {{
+                                let p = el;
+                                for (let i = 0; i < 10; i++) {{
+                                    p = p.parentElement;
+                                    if (!p) break;
+                                    for (const b of p.querySelectorAll('button, a')) {{
+                                        const t = b.textContent.trim().toUpperCase();
+                                        if ((t.includes('COMPRAR') || t.includes('SELECCIONAR') || t.includes('VER'))
+                                            && !b.disabled
+                                            && !b.className.toLowerCase().includes('disabled')) {{
+                                            return true;
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                        return false;
+                    }}""")
+
+                    if disponible:
+                        detalle_lines.append("CENTENARIO BAJA DISPONIBLE!")
+                        mensaje = f"ENTRADAS DISPONIBLES - CENTENARIO BAJA\nCompra ahora: {url_despues}"
+                        enviar_whatsapp(mensaje)
+                        estado["estado"] = "ENTRADAS DISPONIBLES - CENTENARIO BAJA"
+                    else:
+                        detalle_lines.append("Centenario Baja encontrado pero sin boton activo")
+                else:
+                    detalle_lines.append(f"{UBICACION_OBJETIVO} NO encontrado")
 
             estado["detalle"] = "\n".join(detalle_lines)
-            estado["estado"] = f"{len(info_botones)} botones COMPRAR encontrados"
 
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f"Error: {e}")
             estado["estado"] = f"Error: {str(e)[:120]}"
+            estado["detalle"] = str(e)
         finally:
             browser.close()
 
 
 def loop_bot():
-    print("🤖 BOTriver diagnóstico href iniciado.")
+    print("BOTriver iniciado.")
+    enviar_whatsapp("Bot iniciado. Te aviso cuando haya Centenario Baja disponible.")
     while True:
         try:
             chequear_entradas()
         except Exception as e:
-            print(f"❌ Error en loop: {e}")
+            print(f"Error en loop: {e}")
             estado["estado"] = f"Error: {str(e)[:80]}"
-        print(f"⏳ Esperando {INTERVALO_MINUTOS} minutos...")
+        print(f"Esperando {INTERVALO_MINUTOS} minutos...")
         time.sleep(INTERVALO_MINUTOS * 60)
 
 
 if __name__ == "__main__":
     hilo_bot = threading.Thread(target=loop_bot, daemon=True)
     hilo_bot.start()
-    print("🌐 Servidor web iniciado")
+    print("Servidor web iniciado")
     iniciar_servidor()
