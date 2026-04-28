@@ -17,10 +17,10 @@ TWILIO_WHATSAPP_TO = os.environ["TWILIO_WHATSAPP_TO"]
 LOGIN_URL = "https://login.riverid.com.ar/Account/Login"
 CALENDARIO_URL = "https://www.riverid.com.ar/Tickets/ProximosPartidos/Calendario"
 UBICACION_OBJETIVO = "Centenario Baja"
-INTERVALO_MINUTOS = 3
+INTERVALO_MINUTOS = 5
 # ──────────────────────────────────────────────────────────────
 
-estado = {"ultimo_chequeo": "Iniciando...", "estado": "OK", "detalle": ""}
+estado = {"ultimo_chequeo": "Iniciando...", "estado": "OK"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -28,7 +28,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        msg = f"BOTriver activo\nUltimo chequeo: {estado['ultimo_chequeo']}\nEstado: {estado['estado']}\n\nDetalle:\n{estado['detalle']}"
+        msg = f"BOTriver activo\nUltimo chequeo: {estado['ultimo_chequeo']}\nEstado: {estado['estado']}"
         self.wfile.write(msg.encode("utf-8"))
 
     def log_message(self, format, *args):
@@ -66,11 +66,8 @@ def hacer_login(page):
 
 def cargar_calendario(page):
     page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
-    # Esperar hasta que aparezcan los botones COMPRAR
     for _ in range(10):
-        count = page.evaluate("""() => {
-            return document.querySelectorAll('button').length;
-        }""")
+        count = page.evaluate("() => document.querySelectorAll('button').length")
         if count > 0:
             break
         page.wait_for_timeout(1000)
@@ -79,7 +76,6 @@ def cargar_calendario(page):
 
 def chequear_entradas():
     estado["ultimo_chequeo"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    detalle_lines = []
     print(f"Chequeando... {estado['ultimo_chequeo']}")
 
     with sync_playwright() as p:
@@ -99,7 +95,6 @@ def chequear_entradas():
 
             cargar_calendario(page)
 
-            # Contar botones activos
             total_activos = page.evaluate("""() => {
                 let count = 0;
                 document.querySelectorAll('button').forEach(b => {
@@ -110,21 +105,15 @@ def chequear_entradas():
 
             if total_activos == 0:
                 estado["estado"] = "Sin entradas disponibles"
-                estado["detalle"] = ""
                 return
 
-            detalle_lines.append(f"Partidos activos: {total_activos}")
-            estado["estado"] = f"{total_activos} partido(s) con entradas activas"
+            print(f"{total_activos} partido(s) con entradas activas")
 
             for i in range(total_activos):
-                detalle_lines.append(f"\n--- PARTIDO {i+1} ---")
-
-                # Recargar calendario
                 cargar_calendario(page)
 
-                # Esperar que los botones estén listos y hacer click en el i-esimo activo
                 clicked = False
-                for intento in range(3):
+                for _ in range(3):
                     result = page.evaluate(f"""() => {{
                         const botones = Array.from(document.querySelectorAll('button')).filter(
                             b => b.textContent.trim().toUpperCase() === 'COMPRAR' && !b.disabled
@@ -142,72 +131,47 @@ def chequear_entradas():
                     page.wait_for_timeout(2000)
 
                 if not clicked:
-                    detalle_lines.append("No se pudo hacer click (boton no encontrado)")
                     continue
 
-                # Esperar navegacion a ticketera
                 try:
                     page.wait_for_url("**/ticketera/**", timeout=15000)
                     url_ticketera = page.url
-                    detalle_lines.append(f"URL: {url_ticketera}")
                 except Exception:
-                    detalle_lines.append(f"No navego a ticketera. URL: {page.url}")
                     continue
 
-                # Esperar que carguen las ubicaciones
                 page.wait_for_timeout(4000)
                 texto = page.inner_text("body")
-                detalle_lines.append(f"Texto (400 chars): {texto[:400]}")
+
+                # Extraer nombre del partido del texto
+                nombre_partido = ""
+                for linea in texto.split("\n"):
+                    if "VS" in linea.upper() or "RIVER PLATE" in linea.upper():
+                        nombre_partido = linea.strip()
+                        if nombre_partido:
+                            break
 
                 if UBICACION_OBJETIVO in texto:
-                    detalle_lines.append(f"ENCONTRADO: {UBICACION_OBJETIVO}")
-
-                    disponible = page.evaluate(f"""() => {{
-                        const all = document.querySelectorAll('*');
-                        for (const el of all) {{
-                            if (el.children.length > 0) continue;
-                            if (el.textContent.trim() === '{UBICACION_OBJETIVO}') {{
-                                let p = el;
-                                for (let i = 0; i < 10; i++) {{
-                                    p = p.parentElement;
-                                    if (!p) break;
-                                    for (const b of p.querySelectorAll('button, a')) {{
-                                        const t = b.textContent.trim().toUpperCase();
-                                        if ((t.includes('COMPRAR') || t.includes('SELECCIONAR') || t.includes('VER') || t.includes('ELEGIR'))
-                                            && !b.disabled
-                                            && !b.className.toLowerCase().includes('disabled')) {{
-                                            return true;
-                                        }}
-                                    }}
-                                }}
-                            }}
-                        }}
-                        return false;
-                    }}""")
-
-                    if disponible:
-                        detalle_lines.append("CENTENARIO BAJA DISPONIBLE!")
-                        mensaje = f"ENTRADAS DISPONIBLES - CENTENARIO BAJA\nCompra ahora: {url_ticketera}"
-                        enviar_whatsapp(mensaje)
-                        estado["estado"] = "ENTRADAS DISPONIBLES - CENTENARIO BAJA"
-                    else:
-                        detalle_lines.append("Centenario Baja encontrado pero sin boton activo")
+                    print(f"Centenario Baja disponible en: {nombre_partido}")
+                    mensaje = (
+                        f"🔴 HAY ENTRADAS - CENTENARIO BAJA\n"
+                        f"Partido: {nombre_partido}\n"
+                        f"Comprá ahora: {url_ticketera}"
+                    )
+                    enviar_whatsapp(mensaje)
+                    estado["estado"] = f"✅ CENTENARIO BAJA DISPONIBLE - {nombre_partido}"
                 else:
-                    detalle_lines.append(f"{UBICACION_OBJETIVO} NO encontrado en este partido")
-
-            estado["detalle"] = "\n".join(detalle_lines)
+                    print(f"Partido {i+1} ({nombre_partido}): sin Centenario Baja")
+                    estado["estado"] = "Hay entradas pero no para Centenario Baja"
 
         except Exception as e:
             print(f"Error: {e}")
-            estado["estado"] = f"Error: {str(e)[:120]}"
-            estado["detalle"] = str(e)
+            estado["estado"] = f"Error: {str(e)[:80]}"
         finally:
             browser.close()
 
 
 def loop_bot():
     print("BOTriver iniciado.")
-    enviar_whatsapp("Bot iniciado. Te aviso cuando haya Centenario Baja disponible.")
     while True:
         try:
             chequear_entradas()
