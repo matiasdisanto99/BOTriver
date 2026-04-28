@@ -31,6 +31,11 @@ class Handler(BaseHTTPRequestHandler):
         msg = f"BOTriver activo\nUltimo chequeo: {estado['ultimo_chequeo']}\nEstado: {estado['estado']}"
         self.wfile.write(msg.encode("utf-8"))
 
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+
     def log_message(self, format, *args):
         pass
 
@@ -142,23 +147,22 @@ def chequear_entradas():
                 page.wait_for_timeout(4000)
                 texto = page.inner_text("body")
 
-                # Extraer nombre del partido del texto
                 nombre_partido = ""
                 for linea in texto.split("\n"):
-                    if "VS" in linea.upper() or "RIVER PLATE" in linea.upper():
-                        nombre_partido = linea.strip()
-                        if nombre_partido:
-                            break
+                    linea = linea.strip()
+                    if "VS" in linea.upper() and "RIVER" in linea.upper() and len(linea) < 60:
+                        nombre_partido = linea
+                        break
 
                 if UBICACION_OBJETIVO in texto:
                     print(f"Centenario Baja disponible en: {nombre_partido}")
                     mensaje = (
                         f"🔴 HAY ENTRADAS - CENTENARIO BAJA\n"
                         f"Partido: {nombre_partido}\n"
-                        f"Comprá ahora: {url_ticketera}"
+                        f"Compra ahora: {url_ticketera}"
                     )
                     enviar_whatsapp(mensaje)
-                    estado["estado"] = f"✅ CENTENARIO BAJA DISPONIBLE - {nombre_partido}"
+                    estado["estado"] = f"CENTENARIO BAJA DISPONIBLE - {nombre_partido}"
                 else:
                     print(f"Partido {i+1} ({nombre_partido}): sin Centenario Baja")
                     estado["estado"] = "Hay entradas pero no para Centenario Baja"
