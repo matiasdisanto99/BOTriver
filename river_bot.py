@@ -52,7 +52,7 @@ def enviar_whatsapp(mensaje):
 
 def chequear_entradas():
     estado["ultimo_chequeo"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    print(f"🔍 Chequeando entradas... {estado['ultimo_chequeo']}")
+    print(f"🔍 Chequeando... {estado['ultimo_chequeo']}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -61,39 +61,27 @@ def chequear_entradas():
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--disable-images",
-                "--blink-settings=imagesEnabled=false",
-                "--disable-extensions",
-                "--disable-plugins",
-                "--memory-pressure-off",
                 "--single-process",
+                "--disable-extensions",
             ]
         )
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-            java_script_enabled=True,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
         )
-
-        # Bloquear recursos innecesarios para ahorrar memoria
-        def bloquear_recursos(route):
-            if route.request.resource_type in ["image", "media", "font", "stylesheet"]:
-                route.abort()
-            else:
-                route.continue_()
-
         page = context.new_page()
-        page.route("**/*", bloquear_recursos)
 
         try:
-            print("🔐 Haciendo login...")
-            page.goto(LOGIN_URL, timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+            # LOGIN - sin bloquear nada
+            print("🔐 Cargando página de login...")
+            page.goto(LOGIN_URL, timeout=40000, wait_until="domcontentloaded")
+            page.wait_for_selector("input[name='Email']", timeout=20000)
+            print("✅ Formulario de login cargado")
 
             page.fill("input[name='Email']", RIVER_EMAIL)
             page.fill("input[name='Password']", RIVER_PASSWORD)
-            page.click("button[type='submit'], input[type='submit']")
+            page.click("button[type='submit']")
             page.wait_for_load_state("domcontentloaded", timeout=20000)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3000)
 
             if "Login" in page.url:
                 print(f"❌ Login fallido. URL: {page.url}")
@@ -102,17 +90,25 @@ def chequear_entradas():
 
             print(f"✅ Login exitoso. URL: {page.url}")
 
-            print("📅 Cargando calendario...")
-            page.goto(CALENDARIO_URL, timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(4000)
+            # CALENDARIO - bloquear imágenes para ahorrar memoria
+            def bloquear_media(route):
+                if route.request.resource_type in ["image", "media", "font"]:
+                    route.abort()
+                else:
+                    route.continue_()
 
-            html = page.content()
+            page.route("**/*", bloquear_media)
+
+            print("📅 Cargando calendario...")
+            page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
+            page.wait_for_timeout(5000)
+
             texto = page.inner_text("body").lower()
-            print(f"📄 Texto de la página (primeros 300 chars): {texto[:300]}")
+            print(f"📄 Primeros 300 chars: {texto[:300]}")
 
             # Buscar botones COMPRAR activos
             botones = page.locator("button, a").all()
-            print(f"🔎 Total botones/links encontrados: {len(botones)}")
+            print(f"🔎 Total elementos interactivos: {len(botones)}")
 
             partidos_activos = []
             for boton in botones:
@@ -126,59 +122,49 @@ def chequear_entradas():
                     disabled = boton.get_attribute("disabled")
                     if disabled or "disabled" in clases.lower():
                         continue
-
                     href = boton.get_attribute("href") or ""
-                    print(f"🟢 Botón COMPRAR activo encontrado. href: {href}")
+                    print(f"🟢 COMPRAR activo encontrado. href: {href}")
                     partidos_activos.append({"href": href})
                 except Exception:
                     continue
 
             if not partidos_activos:
-                print("⚪ No hay partidos con entradas disponibles.")
+                print("⚪ Sin entradas disponibles.")
                 estado["estado"] = "Sin entradas disponibles"
                 return
 
-            print(f"🟢 {len(partidos_activos)} partido(s) con entradas. Verificando Centenario Baja...")
-            estado["estado"] = f"{len(partidos_activos)} partido(s) con entradas activas"
+            estado["estado"] = f"{len(partidos_activos)} partido(s) con entradas"
 
             for partido in partidos_activos:
                 href = partido["href"]
                 if not href:
                     continue
-
-                if href.startswith("/"):
-                    url_completa = "https://www.riverid.com.ar" + href
-                else:
-                    url_completa = href
+                url_completa = "https://www.riverid.com.ar" + href if href.startswith("/") else href
 
                 print(f"🔎 Verificando Centenario Baja en: {url_completa}")
-                page.goto(url_completa, timeout=30000, wait_until="domcontentloaded")
+                page.goto(url_completa, timeout=40000, wait_until="domcontentloaded")
                 page.wait_for_timeout(3000)
 
                 texto_partido = page.inner_text("body").lower()
-                print(f"📄 Texto partido (primeros 200 chars): {texto_partido[:200]}")
 
                 if UBICACION_OBJETIVO not in texto_partido:
-                    print(f"⚪ Centenario Baja no encontrado en este partido")
+                    print("⚪ Centenario Baja no encontrado")
                     continue
 
-                # Verificar si hay botón activo cerca de Centenario Baja
                 disponible = page.evaluate(f"""() => {{
-                    const elementos = document.querySelectorAll('*');
-                    for (const el of elementos) {{
+                    const all = document.querySelectorAll('*');
+                    for (const el of all) {{
                         if (el.children.length > 0) continue;
-                        const texto = el.textContent.trim().toLowerCase();
-                        if (texto === '{UBICACION_OBJETIVO}') {{
-                            let padre = el;
+                        if (el.textContent.trim().toLowerCase() === '{UBICACION_OBJETIVO}') {{
+                            let p = el;
                             for (let i = 0; i < 8; i++) {{
-                                padre = padre.parentElement;
-                                if (!padre) break;
-                                const botones = padre.querySelectorAll('button, a');
-                                for (const b of botones) {{
+                                p = p.parentElement;
+                                if (!p) break;
+                                for (const b of p.querySelectorAll('button, a')) {{
                                     const t = b.textContent.trim().toUpperCase();
-                                    if ((t.includes('COMPRAR') || t.includes('SELECCIONAR')) 
-                                        && !b.disabled 
-                                        && !b.className.includes('disabled')) {{
+                                    if ((t.includes('COMPRAR') || t.includes('SELECCIONAR'))
+                                        && !b.disabled
+                                        && !b.className.toLowerCase().includes('disabled')) {{
                                         return true;
                                     }}
                                 }}
@@ -189,24 +175,21 @@ def chequear_entradas():
                 }}""")
 
                 if disponible:
-                    mensaje = (
-                        f"🔴 ENTRADAS DISPONIBLES - CENTENARIO BAJA\n"
-                        f"Comprá ahora: {CALENDARIO_URL}"
-                    )
+                    mensaje = f"🔴 ENTRADAS DISPONIBLES - CENTENARIO BAJA\nComprá ahora: {CALENDARIO_URL}"
                     enviar_whatsapp(mensaje)
                     estado["estado"] = "✅ ENTRADAS DISPONIBLES - CENTENARIO BAJA"
                 else:
-                    print(f"⚪ Centenario Baja encontrado pero no disponible")
+                    print("⚪ Centenario Baja no disponible en este partido")
 
         except Exception as e:
-            print(f"❌ Error en chequeo: {e}")
-            estado["estado"] = f"Error: {str(e)[:80]}"
+            print(f"❌ Error: {e}")
+            estado["estado"] = f"Error: {str(e)[:120]}"
         finally:
             browser.close()
 
 
 def loop_bot():
-    print("🤖 BOTriver iniciado con Playwright optimizado.")
+    print("🤖 BOTriver iniciado.")
     enviar_whatsapp("🤖 Bot iniciado. Te aviso cuando haya Centenario Baja disponible.")
     while True:
         try:
