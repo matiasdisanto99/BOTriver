@@ -16,7 +16,6 @@ TWILIO_WHATSAPP_TO = os.environ["TWILIO_WHATSAPP_TO"]
 
 LOGIN_URL = "https://login.riverid.com.ar/Account/Login"
 CALENDARIO_URL = "https://www.riverid.com.ar/Tickets/ProximosPartidos/Calendario"
-UBICACION_OBJETIVO = "centenario baja"
 INTERVALO_MINUTOS = 10
 # ──────────────────────────────────────────────────────────────
 
@@ -70,7 +69,7 @@ def chequear_entradas():
             page.goto(LOGIN_URL, timeout=40000, wait_until="domcontentloaded")
             page.wait_for_timeout(5000)
 
-            email_input = page.locator("input[type='email'], input[name='Email'], input[name='email'], input[placeholder*='correo'], input[placeholder*='email']").first
+            email_input = page.locator("input[type='email'], input[name='Email'], input[name='email']").first
             if not email_input.is_visible():
                 estado["estado"] = "Error: formulario de login no encontrado"
                 return
@@ -89,109 +88,39 @@ def chequear_entradas():
             page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
             page.wait_for_timeout(5000)
 
-            # Buscar botones COMPRAR activos
-            botones = page.locator("button, a").all()
-            partidos_activos = []
-
-            for boton in botones:
-                try:
-                    t = (boton.inner_text() or "").strip().upper()
-                    if "COMPRAR" not in t:
-                        continue
-                    if not boton.is_visible() or not boton.is_enabled():
-                        continue
-                    clases = boton.get_attribute("class") or ""
-                    disabled = boton.get_attribute("disabled")
-                    if disabled or "disabled" in clases.lower():
-                        continue
-                    href = boton.get_attribute("href") or ""
-                    if not href:
-                        try:
-                            href = page.evaluate("el => el.closest('a')?.href || ''", boton)
-                        except Exception:
-                            pass
-                    partidos_activos.append({"href": href})
-                except Exception:
-                    continue
-
-            if not partidos_activos:
-                estado["estado"] = "Sin entradas disponibles"
-                estado["detalle"] = ""
-                return
-
-            estado["estado"] = f"{len(partidos_activos)} partido(s) con entradas activas"
-
-            for i, partido in enumerate(partidos_activos):
-                href = partido["href"]
-                if not href:
-                    continue
-
-                url_completa = "https://www.riverid.com.ar" + href if href.startswith("/") else href
-                print(f"🔎 Partido {i+1}: {url_completa}")
-
-                page.goto(url_completa, timeout=40000, wait_until="domcontentloaded")
-                page.wait_for_timeout(3000)
-
-                # Extraer nombre del partido
-                titulo = page.title() or f"Partido {i+1}"
-                detalle_lines.append(f"--- PARTIDO {i+1}: {titulo} ---")
-
-                # Extraer todas las ubicaciones visibles
-                ubicaciones = page.evaluate("""() => {
-                    const resultados = [];
-                    const all = document.querySelectorAll('*');
-                    for (const el of all) {
-                        if (el.children.length > 0) continue;
-                        const texto = el.textContent.trim().toLowerCase();
-                        if (texto.length > 3 && texto.length < 50 && (
-                            texto.includes('belgrano') ||
-                            texto.includes('centenario') ||
-                            texto.includes('sivori') ||
-                            texto.includes('san martin') ||
-                            texto.includes('platea') ||
-                            texto.includes('popular') ||
-                            texto.includes('tribuna') ||
-                            texto.includes('palco')
-                        )) {
-                            // Ver si hay botón comprar cerca
-                            let p = el;
-                            let disponible = false;
-                            for (let i = 0; i < 8; i++) {
-                                p = p.parentElement;
-                                if (!p) break;
-                                for (const b of p.querySelectorAll('button, a')) {
-                                    const t = b.textContent.trim().toUpperCase();
-                                    if ((t.includes('COMPRAR') || t.includes('SELECCIONAR'))
-                                        && !b.disabled
-                                        && !b.className.toLowerCase().includes('disabled')) {
-                                        disponible = true;
-                                        break;
-                                    }
-                                }
-                                if (disponible) break;
-                            }
-                            resultados.push(texto + (disponible ? ' ✅' : ' ❌'));
-                        }
+            # Imprimir HTML de todos los botones COMPRAR con su contexto
+            info_botones = page.evaluate("""() => {
+                const resultados = [];
+                const all = document.querySelectorAll('button, a');
+                for (const el of all) {
+                    const texto = el.textContent.trim().toUpperCase();
+                    if (texto.includes('COMPRAR')) {
+                        resultados.push({
+                            tag: el.tagName,
+                            texto: el.textContent.trim(),
+                            href: el.getAttribute('href') || el.href || '',
+                            disabled: el.disabled || el.getAttribute('disabled'),
+                            clases: el.className,
+                            outerHTML: el.outerHTML.substring(0, 300),
+                            parentHTML: el.parentElement ? el.parentElement.outerHTML.substring(0, 300) : ''
+                        });
                     }
-                    return [...new Set(resultados)];
-                }""")
+                }
+                return resultados;
+            }""")
 
-                if ubicaciones:
-                    for ub in ubicaciones:
-                        detalle_lines.append(f"  {ub}")
-                else:
-                    detalle_lines.append("  (no se encontraron ubicaciones)")
-
-                # Verificar Centenario Baja específicamente
-                texto_partido = page.inner_text("body").lower()
-                if UBICACION_OBJETIVO in texto_partido:
-                    detalle_lines.append(f"  >> '{UBICACION_OBJETIVO}' ENCONTRADO en texto")
-                else:
-                    detalle_lines.append(f"  >> '{UBICACION_OBJETIVO}' NO encontrado en texto")
-
-                detalle_lines.append("")
+            detalle_lines.append(f"Total botones COMPRAR: {len(info_botones)}")
+            for i, b in enumerate(info_botones):
+                detalle_lines.append(f"\n--- BOTÓN {i+1} ---")
+                detalle_lines.append(f"Tag: {b['tag']}")
+                detalle_lines.append(f"Texto: {b['texto']}")
+                detalle_lines.append(f"href: {b['href']}")
+                detalle_lines.append(f"disabled: {b['disabled']}")
+                detalle_lines.append(f"clases: {b['clases'][:100]}")
+                detalle_lines.append(f"HTML: {b['outerHTML'][:200]}")
 
             estado["detalle"] = "\n".join(detalle_lines)
+            estado["estado"] = f"{len(info_botones)} botones COMPRAR encontrados"
 
         except Exception as e:
             print(f"❌ Error: {e}")
@@ -201,7 +130,7 @@ def chequear_entradas():
 
 
 def loop_bot():
-    print("🤖 BOTriver diagnóstico de ubicaciones iniciado.")
+    print("🤖 BOTriver diagnóstico href iniciado.")
     while True:
         try:
             chequear_entradas()
