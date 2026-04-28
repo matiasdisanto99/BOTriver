@@ -57,13 +57,7 @@ def chequear_entradas():
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--single-process",
-                "--disable-extensions",
-            ]
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"]
         )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
@@ -71,115 +65,72 @@ def chequear_entradas():
         page = context.new_page()
 
         try:
-            # LOGIN - sin bloquear nada
-            print("🔐 Cargando página de login...")
+            print(f"🌐 Navegando a: {LOGIN_URL}")
             page.goto(LOGIN_URL, timeout=40000, wait_until="domcontentloaded")
-            page.wait_for_selector("input[name='Email']", timeout=20000)
-            print("✅ Formulario de login cargado")
-
-            page.fill("input[name='Email']", RIVER_EMAIL)
-            page.fill("input[name='Password']", RIVER_PASSWORD)
-            page.click("button[type='submit']")
-            page.wait_for_load_state("domcontentloaded", timeout=20000)
-            page.wait_for_timeout(3000)
-
-            if "Login" in page.url:
-                print(f"❌ Login fallido. URL: {page.url}")
-                estado["estado"] = "Error de login"
-                return
-
-            print(f"✅ Login exitoso. URL: {page.url}")
-
-            # CALENDARIO - bloquear imágenes para ahorrar memoria
-            def bloquear_media(route):
-                if route.request.resource_type in ["image", "media", "font"]:
-                    route.abort()
-                else:
-                    route.continue_()
-
-            page.route("**/*", bloquear_media)
-
-            print("📅 Cargando calendario...")
-            page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
             page.wait_for_timeout(5000)
 
-            texto = page.inner_text("body").lower()
-            print(f"📄 Primeros 300 chars: {texto[:300]}")
+            url_actual = page.url
+            print(f"📍 URL actual después de cargar: {url_actual}")
 
-            # Buscar botones COMPRAR activos
-            botones = page.locator("button, a").all()
-            print(f"🔎 Total elementos interactivos: {len(botones)}")
+            html = page.content()
+            print(f"📄 HTML (primeros 500 chars): {html[:500]}")
 
-            partidos_activos = []
-            for boton in botones:
+            texto = page.inner_text("body")
+            print(f"📝 Texto visible (primeros 300 chars): {texto[:300]}")
+
+            # Buscar todos los inputs
+            inputs = page.locator("input").all()
+            print(f"🔎 Inputs encontrados: {len(inputs)}")
+            for inp in inputs:
                 try:
-                    texto_boton = (boton.inner_text() or "").strip().upper()
-                    if "COMPRAR" not in texto_boton:
-                        continue
-                    if not boton.is_visible() or not boton.is_enabled():
-                        continue
-                    clases = boton.get_attribute("class") or ""
-                    disabled = boton.get_attribute("disabled")
-                    if disabled or "disabled" in clases.lower():
-                        continue
-                    href = boton.get_attribute("href") or ""
-                    print(f"🟢 COMPRAR activo encontrado. href: {href}")
-                    partidos_activos.append({"href": href})
+                    nombre = inp.get_attribute("name") or ""
+                    tipo = inp.get_attribute("type") or ""
+                    visible = inp.is_visible()
+                    print(f"   - input name='{nombre}' type='{tipo}' visible={visible}")
                 except Exception:
-                    continue
+                    pass
 
-            if not partidos_activos:
-                print("⚪ Sin entradas disponibles.")
-                estado["estado"] = "Sin entradas disponibles"
-                return
-
-            estado["estado"] = f"{len(partidos_activos)} partido(s) con entradas"
-
-            for partido in partidos_activos:
-                href = partido["href"]
-                if not href:
-                    continue
-                url_completa = "https://www.riverid.com.ar" + href if href.startswith("/") else href
-
-                print(f"🔎 Verificando Centenario Baja en: {url_completa}")
-                page.goto(url_completa, timeout=40000, wait_until="domcontentloaded")
+            # Intentar login con lo que hay
+            email_input = page.locator("input[type='email'], input[name='Email'], input[name='email'], input[placeholder*='correo'], input[placeholder*='email']").first
+            if email_input.count() > 0 and email_input.is_visible():
+                print("✅ Campo email encontrado, haciendo login...")
+                email_input.fill(RIVER_EMAIL)
+                page.locator("input[type='password'], input[name='Password']").first.fill(RIVER_PASSWORD)
+                page.locator("button[type='submit'], input[type='submit']").first.click()
+                page.wait_for_load_state("domcontentloaded", timeout=20000)
                 page.wait_for_timeout(3000)
+                print(f"📍 URL después del login: {page.url}")
 
-                texto_partido = page.inner_text("body").lower()
+                if "Login" in page.url:
+                    estado["estado"] = "Error de login"
+                    return
 
-                if UBICACION_OBJETIVO not in texto_partido:
-                    print("⚪ Centenario Baja no encontrado")
-                    continue
+                print("✅ Login exitoso!")
 
-                disponible = page.evaluate(f"""() => {{
-                    const all = document.querySelectorAll('*');
-                    for (const el of all) {{
-                        if (el.children.length > 0) continue;
-                        if (el.textContent.trim().toLowerCase() === '{UBICACION_OBJETIVO}') {{
-                            let p = el;
-                            for (let i = 0; i < 8; i++) {{
-                                p = p.parentElement;
-                                if (!p) break;
-                                for (const b of p.querySelectorAll('button, a')) {{
-                                    const t = b.textContent.trim().toUpperCase();
-                                    if ((t.includes('COMPRAR') || t.includes('SELECCIONAR'))
-                                        && !b.disabled
-                                        && !b.className.toLowerCase().includes('disabled')) {{
-                                        return true;
-                                    }}
-                                }}
-                            }}
-                        }}
-                    }}
-                    return false;
-                }}""")
+                # Ir al calendario
+                page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
+                page.wait_for_timeout(5000)
+                texto_cal = page.inner_text("body").lower()
+                print(f"📅 Calendario (primeros 300 chars): {texto_cal[:300]}")
 
-                if disponible:
-                    mensaje = f"🔴 ENTRADAS DISPONIBLES - CENTENARIO BAJA\nComprá ahora: {CALENDARIO_URL}"
-                    enviar_whatsapp(mensaje)
-                    estado["estado"] = "✅ ENTRADAS DISPONIBLES - CENTENARIO BAJA"
-                else:
-                    print("⚪ Centenario Baja no disponible en este partido")
+                # Buscar COMPRAR
+                botones = page.locator("button, a").all()
+                comprar_count = 0
+                for boton in botones:
+                    try:
+                        t = (boton.inner_text() or "").strip().upper()
+                        if "COMPRAR" in t and boton.is_visible():
+                            clases = boton.get_attribute("class") or ""
+                            disabled = boton.get_attribute("disabled")
+                            print(f"🎫 COMPRAR encontrado - disabled={disabled} clases={clases[:50]}")
+                            comprar_count += 1
+                    except Exception:
+                        pass
+                print(f"Total COMPRAR encontrados: {comprar_count}")
+                estado["estado"] = f"OK - {comprar_count} botones COMPRAR encontrados"
+            else:
+                print("❌ No se encontró campo de email")
+                estado["estado"] = "Error: no se encontró formulario de login"
 
         except Exception as e:
             print(f"❌ Error: {e}")
@@ -189,8 +140,7 @@ def chequear_entradas():
 
 
 def loop_bot():
-    print("🤖 BOTriver iniciado.")
-    enviar_whatsapp("🤖 Bot iniciado. Te aviso cuando haya Centenario Baja disponible.")
+    print("🤖 BOTriver diagnóstico iniciado.")
     while True:
         try:
             chequear_entradas()
