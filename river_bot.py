@@ -64,14 +64,17 @@ def hacer_login(page):
     return "Login" not in page.url
 
 
-def contar_botones_activos(page):
-    return page.evaluate("""() => {
-        let count = 0;
-        document.querySelectorAll('button').forEach(b => {
-            if (b.textContent.trim().toUpperCase() === 'COMPRAR' && !b.disabled) count++;
-        });
-        return count;
-    }""")
+def cargar_calendario(page):
+    page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
+    # Esperar hasta que aparezcan los botones COMPRAR
+    for _ in range(10):
+        count = page.evaluate("""() => {
+            return document.querySelectorAll('button').length;
+        }""")
+        if count > 0:
+            break
+        page.wait_for_timeout(1000)
+    page.wait_for_timeout(3000)
 
 
 def chequear_entradas():
@@ -94,11 +97,16 @@ def chequear_entradas():
                 estado["estado"] = "Error de login"
                 return
 
-            # CALENDARIO
-            page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
-            page.wait_for_timeout(5000)
+            cargar_calendario(page)
 
-            total_activos = contar_botones_activos(page)
+            # Contar botones activos
+            total_activos = page.evaluate("""() => {
+                let count = 0;
+                document.querySelectorAll('button').forEach(b => {
+                    if (b.textContent.trim().toUpperCase() === 'COMPRAR' && !b.disabled) count++;
+                });
+                return count;
+            }""")
 
             if total_activos == 0:
                 estado["estado"] = "Sin entradas disponibles"
@@ -111,27 +119,30 @@ def chequear_entradas():
             for i in range(total_activos):
                 detalle_lines.append(f"\n--- PARTIDO {i+1} ---")
 
-                # Recargar calendario y hacer click en el i-esimo boton activo
-                page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
-                page.wait_for_timeout(5000)
+                # Recargar calendario
+                cargar_calendario(page)
 
-                # Hacer click en el boton numero i (0-indexed) entre los activos
-                clicked = page.evaluate(f"""() => {{
-                    const botones = [];
-                    document.querySelectorAll('button').forEach(b => {{
-                        if (b.textContent.trim().toUpperCase() === 'COMPRAR' && !b.disabled) {{
-                            botones.push(b);
+                # Esperar que los botones estén listos y hacer click en el i-esimo activo
+                clicked = False
+                for intento in range(3):
+                    result = page.evaluate(f"""() => {{
+                        const botones = Array.from(document.querySelectorAll('button')).filter(
+                            b => b.textContent.trim().toUpperCase() === 'COMPRAR' && !b.disabled
+                        );
+                        if (botones[{i}]) {{
+                            botones[{i}].scrollIntoView();
+                            botones[{i}].click();
+                            return true;
                         }}
-                    }});
-                    if (botones[{i}]) {{
-                        botones[{i}].click();
-                        return true;
-                    }}
-                    return false;
-                }}""")
+                        return false;
+                    }}""")
+                    if result:
+                        clicked = True
+                        break
+                    page.wait_for_timeout(2000)
 
                 if not clicked:
-                    detalle_lines.append("No se pudo hacer click")
+                    detalle_lines.append("No se pudo hacer click (boton no encontrado)")
                     continue
 
                 # Esperar navegacion a ticketera
@@ -143,7 +154,7 @@ def chequear_entradas():
                     detalle_lines.append(f"No navego a ticketera. URL: {page.url}")
                     continue
 
-                # Esperar que carguen ubicaciones
+                # Esperar que carguen las ubicaciones
                 page.wait_for_timeout(4000)
                 texto = page.inner_text("body")
                 detalle_lines.append(f"Texto (400 chars): {texto[:400]}")
@@ -182,7 +193,7 @@ def chequear_entradas():
                     else:
                         detalle_lines.append("Centenario Baja encontrado pero sin boton activo")
                 else:
-                    detalle_lines.append(f"{UBICACION_OBJETIVO} NO encontrado")
+                    detalle_lines.append(f"{UBICACION_OBJETIVO} NO encontrado en este partido")
 
             estado["detalle"] = "\n".join(detalle_lines)
 
