@@ -76,9 +76,6 @@ def chequear_entradas():
             page.goto(LOGIN_URL, timeout=40000, wait_until="domcontentloaded")
             page.wait_for_timeout(5000)
 
-            url_login = page.url
-            detalle_lines.append(f"URL login: {url_login}")
-
             email_input = page.locator("input[type='email'], input[name='Email'], input[name='email']").first
             if not email_input.is_visible():
                 detalle_lines.append("ERROR: campo email no encontrado")
@@ -92,9 +89,6 @@ def chequear_entradas():
             page.wait_for_load_state("domcontentloaded", timeout=20000)
             page.wait_for_timeout(3000)
 
-            url_post_login = page.url
-            detalle_lines.append(f"URL post-login: {url_post_login}")
-
             if "Login" in page.url:
                 detalle_lines.append("ERROR: login fallido")
                 estado["estado"] = "Error de login"
@@ -103,24 +97,25 @@ def chequear_entradas():
 
             detalle_lines.append("Login OK")
 
-            # CALENDARIO
+            # CALENDARIO - esperar mas tiempo a que Blazor cargue
             page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
-for _ in range(20):
-    count = page.evaluate("() => document.querySelectorAll('button').length")
-    if count > 2:
-        break
-    page.wait_for_timeout(1500)
-page.wait_for_timeout(5000)
+            for _ in range(20):
+                count = page.evaluate("() => document.querySelectorAll('button').length")
+                detalle_lines.append(f"Botones detectados: {count}")
+                if count > 2:
+                    break
+                page.wait_for_timeout(1500)
+            page.wait_for_timeout(5000)
+
             detalle_lines.append(f"URL calendario: {page.url}")
 
-            # Contar todos los botones
+            # Contar botones COMPRAR
             info = page.evaluate("""() => {
                 const todos = [];
                 document.querySelectorAll('button').forEach(b => {
                     const t = b.textContent.trim().toUpperCase();
                     if (t === 'COMPRAR') {
                         todos.push({
-                            texto: b.textContent.trim(),
                             disabled: b.disabled,
                             clases: b.className
                         });
@@ -131,17 +126,16 @@ page.wait_for_timeout(5000)
 
             detalle_lines.append(f"Botones COMPRAR encontrados: {len(info)}")
             for j, b in enumerate(info):
-                detalle_lines.append(f"  Boton {j+1}: disabled={b['disabled']} clases={b['clases'][:50]}")
+                detalle_lines.append(f"  Boton {j+1}: disabled={b['disabled']}")
 
             activos = [b for b in info if not b['disabled']]
             detalle_lines.append(f"Botones COMPRAR activos: {len(activos)}")
 
             if len(activos) == 0:
                 estado["estado"] = "Sin entradas disponibles"
-                estado["detalle"] = "\n".join(detalle_lines)
-                return
+            else:
+                estado["estado"] = f"{len(activos)} partido(s) activos"
 
-            estado["estado"] = f"{len(activos)} partido(s) activos"
             estado["detalle"] = "\n".join(detalle_lines)
 
         except Exception as e:
@@ -154,7 +148,7 @@ page.wait_for_timeout(5000)
 
 def loop_bot():
     print("BOTriver diagnostico iniciado.")
-    while True:
+    while True:https://github.com/matiasdisanto99/BOTriver/blob/main/river_bot.py
         try:
             chequear_entradas()
         except Exception as e:
