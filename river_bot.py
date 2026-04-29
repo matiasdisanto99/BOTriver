@@ -148,7 +148,7 @@ def chequear_entradas():
 
 def loop_bot():
     print("BOTriver diagnostico iniciado.")
-    while True:https://github.com/matiasdisanto99/BOTriver/blob/main/river_bot.py
+    while True:
         try:
             chequear_entradas()
         except Exception as e:
