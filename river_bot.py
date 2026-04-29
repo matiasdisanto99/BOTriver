@@ -20,7 +20,7 @@ UBICACION_OBJETIVO = "Centenario Baja"
 INTERVALO_MINUTOS = 5
 # ──────────────────────────────────────────────────────────────
 
-estado = {"ultimo_chequeo": "Iniciando...", "estado": "OK", "detalle": ""}
+estado = {"ultimo_chequeo": "Iniciando...", "estado": "OK"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -28,7 +28,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        msg = f"BOTriver activo\nUltimo chequeo: {estado['ultimo_chequeo']}\nEstado: {estado['estado']}\n\nDetalle:\n{estado['detalle']}"
+        msg = f"BOTriver activo\nUltimo chequeo: {estado['ultimo_chequeo']}\nEstado: {estado['estado']}"
         self.wfile.write(msg.encode("utf-8"))
 
     def do_HEAD(self):
@@ -57,7 +57,6 @@ def enviar_whatsapp(mensaje):
 
 def chequear_entradas():
     estado["ultimo_chequeo"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    detalle_lines = []
     print(f"Chequeando... {estado['ultimo_chequeo']}")
 
     with sync_playwright() as p:
@@ -72,15 +71,12 @@ def chequear_entradas():
 
         try:
             # LOGIN
-            detalle_lines.append("Intentando login...")
             page.goto(LOGIN_URL, timeout=40000, wait_until="domcontentloaded")
             page.wait_for_timeout(5000)
 
             email_input = page.locator("input[type='email'], input[name='Email'], input[name='email']").first
             if not email_input.is_visible():
-                detalle_lines.append("ERROR: campo email no encontrado")
-                estado["estado"] = "Error login"
-                estado["detalle"] = "\n".join(detalle_lines)
+                estado["estado"] = "Error de login"
                 return
 
             email_input.fill(RIVER_EMAIL)
@@ -90,64 +86,105 @@ def chequear_entradas():
             page.wait_for_timeout(3000)
 
             if "Login" in page.url:
-                detalle_lines.append("ERROR: login fallido")
                 estado["estado"] = "Error de login"
-                estado["detalle"] = "\n".join(detalle_lines)
                 return
 
-            detalle_lines.append("Login OK")
-
-            # CALENDARIO - esperar mas tiempo a que Blazor cargue
+            # CALENDARIO
             page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
             for _ in range(20):
                 count = page.evaluate("() => document.querySelectorAll('button').length")
-                detalle_lines.append(f"Botones detectados: {count}")
                 if count > 2:
                     break
                 page.wait_for_timeout(1500)
             page.wait_for_timeout(5000)
 
-            detalle_lines.append(f"URL calendario: {page.url}")
-
-            # Contar botones COMPRAR
-            info = page.evaluate("""() => {
-                const todos = [];
+            total_activos = page.evaluate("""() => {
+                let count = 0;
                 document.querySelectorAll('button').forEach(b => {
-                    const t = b.textContent.trim().toUpperCase();
-                    if (t === 'COMPRAR') {
-                        todos.push({
-                            disabled: b.disabled,
-                            clases: b.className
-                        });
-                    }
+                    if (b.textContent.trim().toUpperCase() === 'COMPRAR' && !b.disabled) count++;
                 });
-                return todos;
+                return count;
             }""")
 
-            detalle_lines.append(f"Botones COMPRAR encontrados: {len(info)}")
-            for j, b in enumerate(info):
-                detalle_lines.append(f"  Boton {j+1}: disabled={b['disabled']}")
-
-            activos = [b for b in info if not b['disabled']]
-            detalle_lines.append(f"Botones COMPRAR activos: {len(activos)}")
-
-            if len(activos) == 0:
+            if total_activos == 0:
                 estado["estado"] = "Sin entradas disponibles"
-            else:
-                estado["estado"] = f"{len(activos)} partido(s) activos"
+                return
 
-            estado["detalle"] = "\n".join(detalle_lines)
+            print(f"{total_activos} partido(s) con entradas activas")
+
+            for i in range(total_activos):
+                # Recargar calendario
+                page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
+                for _ in range(20):
+                    count = page.evaluate("() => document.querySelectorAll('button').length")
+                    if count > 2:
+                        break
+                    page.wait_for_timeout(1500)
+                page.wait_for_timeout(5000)
+
+                # Click en el i-esimo boton activo
+                clicked = False
+                for _ in range(3):
+                    result = page.evaluate(f"""() => {{
+                        const botones = Array.from(document.querySelectorAll('button')).filter(
+                            b => b.textContent.trim().toUpperCase() === 'COMPRAR' && !b.disabled
+                        );
+                        if (botones[{i}]) {{
+                            botones[{i}].scrollIntoView();
+                            botones[{i}].click();
+                            return true;
+                        }}
+                        return false;
+                    }}""")
+                    if result:
+                        clicked = True
+                        break
+                    page.wait_for_timeout(2000)
+
+                if not clicked:
+                    continue
+
+                # Esperar navegacion a ticketera
+                try:
+                    page.wait_for_url("**/ticketera/**", timeout=15000)
+                    url_ticketera = page.url
+                except Exception:
+                    continue
+
+                # Esperar que carguen las ubicaciones
+                page.wait_for_timeout(4000)
+                texto = page.inner_text("body")
+
+                # Extraer nombre del partido
+                nombre_partido = ""
+                for linea in texto.split("\n"):
+                    linea = linea.strip()
+                    if "VS" in linea.upper() and "RIVER" in linea.upper() and len(linea) < 60:
+                        nombre_partido = linea
+                        break
+
+                if UBICACION_OBJETIVO in texto:
+                    print(f"Centenario Baja disponible en: {nombre_partido}")
+                    mensaje = (
+                        f"ENTRADAS DISPONIBLES - CENTENARIO BAJA\n"
+                        f"Partido: {nombre_partido}\n"
+                        f"Compra ahora: {url_ticketera}"
+                    )
+                    enviar_whatsapp(mensaje)
+                    estado["estado"] = f"CENTENARIO BAJA DISPONIBLE - {nombre_partido}"
+                else:
+                    print(f"Partido {i+1} ({nombre_partido}): sin Centenario Baja")
+                    estado["estado"] = "Hay entradas pero no para Centenario Baja"
 
         except Exception as e:
-            detalle_lines.append(f"ERROR: {e}")
+            print(f"Error: {e}")
             estado["estado"] = f"Error: {str(e)[:80]}"
-            estado["detalle"] = "\n".join(detalle_lines)
         finally:
             browser.close()
 
 
 def loop_bot():
-    print("BOTriver diagnostico iniciado.")
+    print("BOTriver iniciado.")
     while True:
         try:
             chequear_entradas()
