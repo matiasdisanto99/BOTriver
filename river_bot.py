@@ -105,13 +105,12 @@ def chequear_entradas():
 
             # CALENDARIO
             page.goto(CALENDARIO_URL, timeout=40000, wait_until="domcontentloaded")
-            for _ in range(10):
-                count = page.evaluate("() => document.querySelectorAll('button').length")
-                if count > 0:
-                    break
-                page.wait_for_timeout(1000)
-            page.wait_for_timeout(3000)
-
+for _ in range(20):
+    count = page.evaluate("() => document.querySelectorAll('button').length")
+    if count > 2:
+        break
+    page.wait_for_timeout(1500)
+page.wait_for_timeout(5000)
             detalle_lines.append(f"URL calendario: {page.url}")
 
             # Contar todos los botones
