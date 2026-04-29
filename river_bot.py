@@ -2,7 +2,7 @@ import os
 import time
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from datetime import datetime
+from datetime import datetime, date
 from twilio.rest import Client
 from playwright.sync_api import sync_playwright
 
@@ -21,6 +21,10 @@ INTERVALO_MINUTOS = 5
 # ──────────────────────────────────────────────────────────────
 
 estado = {"ultimo_chequeo": "Iniciando...", "estado": "OK"}
+
+# Guarda las URLs de partidos ya notificados hoy
+# Se resetea automáticamente cada día
+partidos_notificados = {"fecha": str(date.today()), "urls": set()}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -53,6 +57,19 @@ def enviar_whatsapp(mensaje):
         print(f"WhatsApp enviado: {mensaje}")
     except Exception as e:
         print(f"Error WhatsApp: {e}")
+
+
+def ya_notificado(url):
+    # Resetear si cambió el día
+    hoy = str(date.today())
+    if partidos_notificados["fecha"] != hoy:
+        partidos_notificados["fecha"] = hoy
+        partidos_notificados["urls"] = set()
+    return url in partidos_notificados["urls"]
+
+
+def marcar_notificado(url):
+    partidos_notificados["urls"].add(url)
 
 
 def chequear_entradas():
@@ -151,6 +168,11 @@ def chequear_entradas():
                 except Exception:
                     continue
 
+                # Si ya notificamos este partido hoy, saltar
+                if ya_notificado(url_ticketera):
+                    print(f"Partido {i+1} ya notificado hoy, saltando")
+                    continue
+
                 # Esperar que carguen las ubicaciones
                 page.wait_for_timeout(4000)
                 texto = page.inner_text("body")
@@ -171,6 +193,7 @@ def chequear_entradas():
                         f"Compra ahora: {url_ticketera}"
                     )
                     enviar_whatsapp(mensaje)
+                    marcar_notificado(url_ticketera)
                     estado["estado"] = f"CENTENARIO BAJA DISPONIBLE - {nombre_partido}"
                 else:
                     print(f"Partido {i+1} ({nombre_partido}): sin Centenario Baja")
